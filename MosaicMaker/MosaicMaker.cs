@@ -94,9 +94,7 @@ namespace MosaicMaker
                 }
             }
             else {
-                if (imageKeyword.EndsWith(" ")) {
-                    imageKeyword = imageKeyword.Substring(0, imageKeyword.IndexOf(" "));
-                }
+                imageKeyword = imageKeyword.Trim();
             }
 
             log.Info($"\n\nImage analysis: {imageKeyword}\n");
