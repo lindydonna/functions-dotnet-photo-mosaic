@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
@@ -31,12 +32,27 @@ namespace MosaicMaker
         #endregion  
 
         [FunctionName("RequestMosaic")]
-        [return: Queue("generate-mosaic")]
-        public static MosaicRequest RequestImageProcessing(
+        public static HttpResponseMessage RequestImageProcessing(
             [HttpTrigger(AuthorizationLevel.Anonymous, new string[] { "POST" })] MosaicRequest input,
+            [Queue("%generate-mosaic%")] out MosaicRequest queueOutput,
             TraceWriter log)
         {
-            return input;
+            if (string.IsNullOrEmpty(input.OutputFilename))
+                input.OutputFilename = $"{Guid.NewGuid()}.jpg";
+
+            queueOutput = input;
+
+            // get output URL
+            var storageURL = Environment.GetEnvironmentVariable("STORAGE_URL");
+            var outputContainerName = Environment.GetEnvironmentVariable("output-container");
+            var location = $"{storageURL}{outputContainerName}/{input.OutputFilename}";
+            log.Info($"\n\nOutput location:\n{location}\n\n");
+
+            var response = new HttpResponseMessage(HttpStatusCode.Accepted);
+            response.Content = new StringContent(location);
+            response.Headers.Location = new Uri(location);
+
+            return response;
         }
 
         [FunctionName("Settings")]
@@ -57,13 +73,13 @@ namespace MosaicMaker
 
         [FunctionName("CreateMosaic")]
         public static async Task CreateMosaicAsync(
-        [QueueTrigger("generate-mosaic")] MosaicRequest mosaicRequest,
-        [Blob("%input-container%/{InputImage}", FileAccess.Read)] Stream sourceImage,
-        [Blob("%tile-image-container%")] CloudBlobContainer tileContainer,
-        [Blob("%output-container%/{InputImage}", FileAccess.Write)] Stream outputStream,
-        TraceWriter log)
+            [QueueTrigger("%generate-mosaic%")] MosaicRequest mosaicRequest,
+            [Blob("%tile-image-container%")] CloudBlobContainer tileContainer,
+            [Blob("%output-container%/{OutputFilename}", FileAccess.Write)] Stream outputStream,
+            TraceWriter log)
         {
             var imageKeyword = mosaicRequest.ImageContentString;
+            var sourceImage = await DownloadFileAsync(mosaicRequest.InputImageUrl);
 
             // fall back to regular vision service if PredictionApiUrl is empty, 
             // or if Custom Vision does not have high confidence
@@ -115,9 +131,24 @@ namespace MosaicMaker
             Utilities.EmitCustomTelemetry(!noCustomImageSearch, imageKeyword);
         }
 
+        private static async Task<Stream> DownloadFileAsync(string inputImageUrl)
+        {
+            var client = new HttpClient();
+
+            try {
+                var bytes = await client.GetByteArrayAsync(inputImageUrl);
+                return new MemoryStream(bytes);
+                
+            }
+            catch (Exception) {
+                return null;
+            }
+        }
+
         public class MosaicRequest
         {
-            public string InputImage { get; set; }
+            public string InputImageUrl { get; set; }
+            public string OutputFilename { get; set; }
             public string ImageContentString { get; set; }  // if null or empty, use image recognition on the input image
             public int TilePixels { get; set; } // override default value in app settings
         }
